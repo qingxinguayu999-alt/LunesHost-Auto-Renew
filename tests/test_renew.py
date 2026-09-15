@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 
-from renew import notification_text, redact
+from renew import is_authenticated_dashboard_url, notification_text, redact
 
 
 class RedactionTests(unittest.TestCase):
@@ -34,6 +34,20 @@ class NotificationTests(unittest.TestCase):
         )
         self.assertIn("自动续期失败", message)
         self.assertIn("脱敏日志", message)
+
+
+class DashboardUrlTests(unittest.TestCase):
+    def test_accepts_protected_dashboard_routes(self) -> None:
+        self.assertTrue(is_authenticated_dashboard_url("https://betadash.lunes.host/"))
+        self.assertTrue(
+            is_authenticated_dashboard_url("https://betadash.lunes.host/server/example")
+        )
+
+    def test_rejects_login_and_external_routes(self) -> None:
+        self.assertFalse(
+            is_authenticated_dashboard_url("https://betadash.lunes.host/login")
+        )
+        self.assertFalse(is_authenticated_dashboard_url("https://example.com/"))
 
 if __name__ == "__main__":
     unittest.main()
