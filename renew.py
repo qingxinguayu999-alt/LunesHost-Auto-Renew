@@ -20,6 +20,7 @@ DASHBOARD_URL = "https://betadash.lunes.host/"
 ALLOWED_HOST = "betadash.lunes.host"
 LOGIN_PATH = "/login"
 TIMEOUT_MS = 30_000
+AUTHENTICATED_PATHS = {"", "/", "/dashboard", "/servers"}
 
 
 class RenewalError(RuntimeError):
@@ -92,6 +93,15 @@ def on_login_page(page: "Page") -> bool:
     return path == LOGIN_PATH or (email.count() == 1 and password.count() == 1)
 
 
+def is_authenticated_dashboard_url(url: str) -> bool:
+    """Recognize protected Betadash routes without relying on translated UI text."""
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != ALLOWED_HOST:
+        return False
+    path = parsed.path.rstrip("/")
+    return path in AUTHENTICATED_PATHS or path.startswith("/server/")
+
+
 def verify_dashboard(page: "Page") -> None:
     parsed = urlparse(page.url)
     if parsed.scheme != "https" or parsed.hostname != ALLOWED_HOST:
@@ -101,7 +111,14 @@ def verify_dashboard(page: "Page") -> None:
             "Login was not accepted. Check the LUNES_EMAIL and LUNES_PASSWORD secrets."
         )
 
-    # The dashboard UI may change, so verify multiple stable, non-personal signals.
+    # Betadash protects its root route: unauthenticated visits are redirected to
+    # /login. Reaching a protected route with no login form is positive evidence
+    # even while the dashboard's client-side text is still loading.
+    if is_authenticated_dashboard_url(page.url):
+        return
+
+    # Fallback for future authenticated routes. Include both English and current
+    # Chinese labels because browsers or the site may localize the dashboard.
     body = page.locator("body").inner_text(timeout=TIMEOUT_MS)
     dashboard_signals = (
         "Open Panel",
@@ -109,6 +126,12 @@ def verify_dashboard(page: "Page") -> None:
         "Free Tier",
         "Betadash",
         "Transfer Node",
+        "开放面板",
+        "服务器控制",
+        "免费等级",
+        "传输节点",
+        "删除服务器",
+        "创建于",
     )
     if not any(signal.casefold() in body.casefold() for signal in dashboard_signals):
         raise RenewalError(
@@ -149,6 +172,7 @@ def renew(email: str, password: str) -> None:
                     pass
 
             page.wait_for_load_state("domcontentloaded", timeout=TIMEOUT_MS)
+            page.wait_for_timeout(2_000)
             verify_dashboard(page)
         finally:
             # Never persist cookies, traces, HTML, or screenshots.
