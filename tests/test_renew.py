@@ -1,6 +1,7 @@
 import unittest
+from datetime import datetime, timezone
 
-from renew import redact
+from renew import notification_text, redact
 
 
 class RedactionTests(unittest.TestCase):
@@ -17,6 +18,22 @@ class RedactionTests(unittest.TestCase):
             "Contact [REDACTED_EMAIL]",
         )
 
+
+class NotificationTests(unittest.TestCase):
+    def test_success_notification_contains_only_generic_status(self) -> None:
+        message = notification_text(
+            True, datetime(2026, 9, 15, 3, 17, tzinfo=timezone.utc)
+        )
+        self.assertIn("自动续期成功", message)
+        self.assertIn("2026-09-15 03:17:00", message)
+        self.assertNotIn("@", message)
+
+    def test_failure_notification_is_generic(self) -> None:
+        message = notification_text(
+            False, datetime(2026, 9, 15, 3, 17, tzinfo=timezone.utc)
+        )
+        self.assertIn("自动续期失败", message)
+        self.assertIn("脱敏日志", message)
 
 if __name__ == "__main__":
     unittest.main()
