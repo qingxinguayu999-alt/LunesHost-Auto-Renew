@@ -6,6 +6,9 @@ from __future__ import annotations
 import os
 import re
 import sys
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -21,6 +24,10 @@ TIMEOUT_MS = 30_000
 
 class RenewalError(RuntimeError):
     """A safe, user-facing renewal failure."""
+
+
+class NotificationError(RuntimeError):
+    """A safe, user-facing Telegram notification failure."""
 
 
 def required_secret(name: str) -> str:
@@ -42,6 +49,40 @@ def redact(text: str, secrets: tuple[str, ...] = ()) -> str:
         if secret:
             safe = safe.replace(secret, "[REDACTED]")
     return re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[REDACTED_EMAIL]", safe)
+
+
+def notification_text(success: bool, now: datetime | None = None) -> str:
+    """Build a notification containing no account or server identifiers."""
+    timestamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    status = "成功" if success else "失败"
+    icon = "✅" if success else "❌"
+    guidance = "登录保活已验证。" if success else "请查看 GitHub Actions 的脱敏日志。"
+    return (
+        f"{icon} Lunes Host 自动续期{status}\n"
+        f"{guidance}\n"
+        f"UTC 时间：{timestamp:%Y-%m-%d %H:%M:%S}"
+    )
+
+
+def send_telegram(bot_token: str, chat_id: str, message: str) -> None:
+    """Send a Telegram message without logging its URL, response, or secrets."""
+    token_path = urllib.parse.quote(bot_token, safe=":")
+    url = f"https://api.telegram.org/bot{token_path}/sendMessage"
+    payload = urllib.parse.urlencode(
+        {"chat_id": chat_id, "text": message, "disable_web_page_preview": "true"}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            if not 200 <= response.status < 300:
+                raise NotificationError("Telegram returned a non-success status.")
+    except Exception as exc:
+        raise NotificationError("Telegram notification could not be sent.") from exc
 
 
 def on_login_page(page: "Page") -> bool:
@@ -118,6 +159,22 @@ def renew(email: str, password: str) -> None:
 def main() -> int:
     email = ""
     password = ""
+    tg_bot_token = os.environ.get("TG_BOT_TOKEN", "").strip()
+    tg_chat_id = os.environ.get("TG_CHAT_ID", "").strip()
+    telegram_enabled = bool(tg_bot_token and tg_chat_id)
+    success = False
+    exit_code = 1
+
+    for value in (tg_bot_token, tg_chat_id):
+        if value:
+            mask_secret(value)
+    if bool(tg_bot_token) != bool(tg_chat_id):
+        print(
+            "Warning: Telegram notifications require both TG_BOT_TOKEN and TG_CHAT_ID; "
+            "notifications are disabled.",
+            file=sys.stderr,
+        )
+
     try:
         email = required_secret("LUNES_EMAIL")
         password = required_secret("LUNES_PASSWORD")
@@ -126,14 +183,29 @@ def main() -> int:
         print("Starting authorized Lunes dashboard sign-in.")
         renew(email, password)
         print("Success: Lunes dashboard login was verified.")
-        return 0
+        success = True
+        exit_code = 0
     except RenewalError as exc:
         print(f"Error: {redact(str(exc), (email, password))}", file=sys.stderr)
-        return 1
     except Exception:
         # Avoid printing raw browser exceptions because they can include page data.
         print("Error: unexpected browser failure; no page data was logged.", file=sys.stderr)
-        return 1
+    finally:
+        if telegram_enabled:
+            try:
+                send_telegram(
+                    tg_bot_token,
+                    tg_chat_id,
+                    notification_text(success),
+                )
+                print("Telegram notification sent.")
+            except NotificationError:
+                # Renewal status remains authoritative when Telegram is unavailable.
+                print(
+                    "Warning: Telegram notification failed; no response data was logged.",
+                    file=sys.stderr,
+                )
+    return exit_code
 
 
 if __name__ == "__main__":
